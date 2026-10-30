@@ -1,0 +1,357 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Vanessa: The Last Exit</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#050505;color:white;font-family:Arial;overflow:hidden}
+canvas{display:block;width:100vw;height:100dvh;background:#080808;touch-action:none}
+#hud{position:absolute;top:12px;left:12px;right:12px;pointer-events:none}
+.panel{background:#000b;padding:12px;border:1px solid #555;border-radius:8px;display:inline-block}
+#objective{position:absolute;top:12px;right:12px}
+#message{position:absolute;bottom:90px;left:50%;transform:translateX(-50%);background:#000c;padding:12px;border-radius:8px;text-align:center;max-width:90%;font-size:14px}
+#overlay{position:absolute;inset:0;background:#000e;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px}
+#menu{max-width:480px}
+h1{color:#b82020;font-size:clamp(28px,7vw,48px)}
+button{background:#8b1717;color:white;border:1px solid #d55;padding:12px 18px;border-radius:7px;font-weight:bold;font-size:16px}
+#controls{position:absolute;bottom:15px;left:15px;right:15px;display:none;justify-content:space-between;align-items:end;pointer-events:none}
+.pad{display:grid;grid-template-columns:48px 48px 48px;grid-template-rows:48px 48px 48px;gap:4px;pointer-events:auto}
+.pad button,.actions button{opacity:.7;padding:5px;font-size:19px}
+.pad button:nth-child(1){grid-column:2}
+.pad button:nth-child(2){grid-column:1;grid-row:2}
+.pad button:nth-child(3){grid-column:2;grid-row:2}
+.pad button:nth-child(4){grid-column:3;grid-row:2}
+.pad button:nth-child(5){grid-column:2;grid-row:3}
+.actions{display:flex;flex-direction:column;gap:8px;pointer-events:auto}
+#stats{font-size:13px;line-height:1.7}
+@media(pointer:coarse){#controls{display:flex}}
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+ <div class="panel">
+  <b>VANESSA: THE LAST EXIT</b>
+  <div id="stats">Lives: 7<br>Parts: 0/4</div>
+ </div>
+ <div class="panel" id="objective">Find all 4 parts</div>
+</div>
+
+<div id="message">Find a way out. Someone is in the house.</div>
+
+<div id="controls">
+ <div class="pad">
+  <button data-key="w">▲</button>
+  <button data-key="a">◀</button>
+  <button data-key="s">▼</button>
+  <button data-key="d">▶</button>
+  <button data-key="shift">RUN</button>
+ </div>
+ <div class="actions">
+  <button id="flash">🔦</button>
+  <button id="interact">INTERACT</button>
+ </div>
+</div>
+
+<div id="overlay">
+ <div id="menu">
+  <h1>VANESSA</h1>
+  <h3>THE LAST EXIT</h3>
+  <p>Chapter 01 — The Basement</p>
+  <p>You are trapped inside a basement. Four missing components are needed to unlock the exit.</p>
+  <p>Vanessa is somewhere inside the house. Find the parts, avoid her, and escape.</p>
+  <p><b>PC:</b> WASD to move, mouse to look, E to interact, Shift to run, F for flashlight.</p>
+  <p><b>Mobile:</b> Use the on-screen controls and drag the screen to look around.</p>
+  <button id="start">ENTER THE BASEMENT</button>
+ </div>
+</div>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const stats=document.getElementById("stats");
+const message=document.getElementById("message");
+const objective=document.getElementById("objective");
+const overlay=document.getElementById("overlay");
+
+let W=800,H=450;
+function resize(){
+ W=canvas.width=innerWidth;
+ H=canvas.height=innerHeight;
+}
+addEventListener("resize",resize);resize();
+
+const map=[
+"################",
+"#S.............#",
+"#.####.#####...#",
+"#....#.....#...#",
+"###..#.###.#.###",
+"#....#...#.#...#",
+"#.######.#.##..#",
+"#..............#",
+"#.####.####....#",
+"#....#.....#...#",
+"####.#.###.#.###",
+"#....#...#.....#",
+"#.######.####..#",
+"#.............E#",
+"################"
+];
+
+const tile=1;
+function wall(x,y){
+ const c=map[Math.floor(y)]?.[Math.floor(x)];
+ return !c || c==="#";
+}
+
+const player={x:1.5,y:1.5,a:0};
+const vanessa={x:13.5,y:1.5,speed:.72};
+const parts=[
+ {x:3.5,y:3.5,name:"Wrench",found:false,color:"#ffcf4a"},
+ {x:8.5,y:5.5,name:"Key",found:false,color:"#54d8ff"},
+ {x:12.5,y:7.5,name:"Crowbar",found:false,color:"#ff6868"},
+ {x:6.5,y:11.5,name:"Electric resistor",found:false,color:"#a77aff"}
+];
+
+let lives=7,started=false,ended=false;
+let flashlight=true;
+let keys={};
+let depth=[];
+let last=performance.now();
+let messageTimer=0;
+
+function say(t){
+ message.textContent=t;
+ messageTimer=performance.now()+3000;
+}
+
+function distance(a,b){
+ return Math.hypot(a.x-b.x,a.y-b.y);
+}
+
+function move(obj,dx,dy){
+ if(!wall(obj.x+dx,obj.y))obj.x+=dx;
+ if(!wall(obj.x,obj.y+dy))obj.y+=dy;
+}
+
+function cast(angle){
+ let d=0;
+ while(d<20){
+  d+=.025;
+  const x=player.x+Math.cos(angle)*d;
+  const y=player.y+Math.sin(angle)*d;
+  if(wall(x,y))return d;
+ }
+ return 20;
+}
+
+function draw(){
+ const sky=ctx.createLinearGradient(0,0,0,H/2);
+ sky.addColorStop(0,"#020306");
+ sky.addColorStop(1,"#252323");
+ ctx.fillStyle=sky;ctx.fillRect(0,0,W,H/2);
+
+ const floor=ctx.createLinearGradient(0,H/2,0,H);
+ floor.addColorStop(0,"#24201e");
+ floor.addColorStop(1,"#050505");
+ ctx.fillStyle=floor;ctx.fillRect(0,H/2,W,H/2);
+
+ const fov=Math.PI/3;
+ const rays=Math.ceil(W/3);
+ depth=[];
+
+ for(let i=0;i<rays;i++){
+  const a=player.a-fov/2+(i/rays)*fov;
+  const d=cast(a);
+  depth[i]=d;
+  const corrected=d*Math.cos(a-player.a);
+  const height=Math.min(H*2,H/(corrected+.001));
+  const shade=Math.max(15,125-corrected*13);
+  const x=i*W/rays;
+  ctx.fillStyle=`rgb(${shade},${shade*.85},${shade*.8})`;
+  ctx.fillRect(x,(H-height)/2,W/rays+1,height);
+ }
+
+ function sprite(x,y,color,label,size=1){
+  const dx=x-player.x,dy=y-player.y;
+  const dist=Math.hypot(dx,dy);
+  let angle=Math.atan2(dy,dx)-player.a;
+  while(angle>Math.PI)angle-=Math.PI*2;
+  while(angle<-Math.PI)angle+=Math.PI*2;
+  if(Math.abs(angle)>fov/2+.2||dist<.1)return;
+  const screenX=(.5+angle/fov)*W;
+  const scale=H/dist;
+  const w=scale*.3*size;
+  const h=scale*.7*size;
+  const col=Math.floor(screenX/(W/rays));
+  if(depth[Math.max(0,Math.min(rays-1,col))]<dist-.2)return;
+
+  ctx.fillStyle=color;
+  ctx.globalAlpha=Math.max(.25,1-dist/15);
+  ctx.fillRect(screenX-w/2,H/2-h/2,w,h);
+  ctx.globalAlpha=1;
+  if(w>15){
+   ctx.fillStyle="white";
+   ctx.font=`bold ${Math.max(10,Math.min(16,w/3))}px Arial`;
+   ctx.textAlign="center";
+   ctx.fillText(label,screenX,H/2-h/2-7);
+  }
+ }
+
+ parts.forEach(p=>{if(!p.found)sprite(p.x,p.y,p.color,p.name,.7)});
+ if(!ended)sprite(vanessa.x,vanessa.y,"#a20c16","VANESSA",1.5);
+
+ // Flashlight darkness
+ if(!flashlight){
+  ctx.fillStyle="rgba(0,0,0,.83)";
+  ctx.fillRect(0,0,W,H);
+ }else{
+  const g=ctx.createRadialGradient(W/2,H/2,20,W/2,H/2,H*.75);
+  g.addColorStop(0,"rgba(0,0,0,0)");
+  g.addColorStop(1,"rgba(0,0,0,.7)");
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+ }
+}
+
+function update(dt){
+ if(!started||ended)return;
+
+ const running=keys.shift;
+ const speed=running?3.1:2.15;
+ let dx=0,dy=0;
+
+ if(keys.w) {dx+=Math.cos(player.a);dy+=Math.sin(player.a)}
+ if(keys.s) {dx-=Math.cos(player.a);dy-=Math.sin(player.a)}
+ if(keys.a) {dx+=Math.cos(player.a-Math.PI/2);dy+=Math.sin(player.a-Math.PI/2)}
+ if(keys.d) {dx+=Math.cos(player.a+Math.PI/2);dy+=Math.sin(player.a+Math.PI/2)}
+
+ const len=Math.hypot(dx,dy)||1;
+ move(player,dx/len*speed*dt,dy/len*speed*dt);
+
+ // Vanessa follows the player, but moves more slowly
+ const ex=player.x-vanessa.x;
+ const ey=player.y-vanessa.y;
+ const dist=Math.hypot(ex,ey);
+
+ if(dist<9){
+  const vx=ex/dist*vanessa.speed*dt;
+  const vy=ey/dist*vanessa.speed*dt;
+  if(Math.abs(ex)>Math.abs(ey)){
+   move(vanessa,vx,0);move(vanessa,0,vy);
+  }else{
+   move(vanessa,0,vy);move(vanessa,vx,0);
+  }
+ }
+
+ if(dist<.65){
+  lives--;
+  player.x=1.5;player.y=1.5;
+  vanessa.x=13.5;vanessa.y=1.5;
+  say("Vanessa caught you! You lost a life.");
+  if(lives<=0)finish(false);
+ }
+
+ stats.innerHTML=`Lives: ${lives}<br>Parts: ${parts.filter(p=>p.found).length}/4`;
+
+ if(dist<4)say("Vanessa is nearby...");
+}
+
+function interact(){
+ if(!started||ended)return;
+ for(const p of parts){
+  if(!p.found&&distance(player,p)<1.15){
+   p.found=true;
+   say("Collected: "+p.name);
+   stats.innerHTML=`Lives: ${lives}<br>Parts: ${parts.filter(p=>p.found).length}/4`;
+   return;
+  }
+ }
+
+ const exit={x:14.1,y:13.5};
+ if(distance(player,exit)<1.5){
+  if(parts.every(p=>p.found))finish(true);
+  else say("The exit is locked. Find all four components!");
+ }else{
+  say("Nothing to interact with here.");
+ }
+}
+
+function finish(win){
+ ended=true;
+ overlay.style.display="flex";
+ document.getElementById("menu").innerHTML=win?
+ `<h1>YOU ESCAPED!</h1>
+ <h3>CHAPTER 01 COMPLETE</h3>
+ <p>You found all four components and escaped the basement.</p>
+ <p>But Vanessa is still somewhere in the house...</p>
+ <button onclick="location.reload()">PLAY AGAIN</button>`:
+ `<h1>GAME OVER</h1>
+ <p>Vanessa caught you too many times.</p>
+ <button onclick="location.reload()">TRY AGAIN</button>`;
+}
+
+function loop(now){
+ const dt=Math.min((now-last)/1000,.05);
+ last=now;
+ update(dt);
+ draw();
+ requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+document.addEventListener("keydown",e=>{
+ const k=e.key.toLowerCase();
+ if(["w","a","s","d","shift"].includes(k)){keys[k]=true;e.preventDefault()}
+ if(k==="e")interact();
+ if(k==="f")flashlight=!flashlight;
+});
+document.addEventListener("keyup",e=>{keys[e.key.toLowerCase()]=false});
+
+document.getElementById("start").onclick=()=>{
+ started=true;
+ overlay.style.display="none";
+ say("Find the four components. Get out alive.");
+ if(matchMedia("(pointer:fine)").matches)canvas.requestPointerLock?.();
+};
+
+document.addEventListener("mousemove",e=>{
+ if(document.pointerLockElement===canvas){
+  player.a+=e.movementX*.003;
+ }
+});
+
+let dragging=false,lastX=0;
+canvas.addEventListener("pointerdown",e=>{
+ if(!started)return;
+ if(document.pointerLockElement!==canvas){
+  dragging=true;lastX=e.clientX;
+ }
+});
+canvas.addEventListener("pointermove",e=>{
+ if(dragging){
+  player.a+=(e.clientX-lastX)*.006;
+  lastX=e.clientX;
+ }
+});
+canvas.addEventListener("pointerup",()=>dragging=false);
+canvas.addEventListener("pointercancel",()=>dragging=false);
+
+document.querySelectorAll("[data-key]").forEach(btn=>{
+ const k=btn.dataset.key;
+ btn.addEventListener("pointerdown",e=>{e.preventDefault();keys[k]=true});
+ ["pointerup","pointerleave","pointercancel"].forEach(ev=>
+  btn.addEventListener(ev,()=>keys[k]=false)
+ );
+});
+
+document.getElementById("interact").onclick=interact;
+document.getElementById("flash").onclick=()=>flashlight=!flashlight;
+</script>
+</body>
+</html>
